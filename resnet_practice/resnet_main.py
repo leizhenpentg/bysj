@@ -2,7 +2,6 @@ import numpy as np
 import tensorflow as tf
 import random
 import logging
-slim = tf.contrib.slim
 import numpy as np
 import argparse
 import os
@@ -11,7 +10,7 @@ from datetime import datetime
 import math
 import time
 from resnet_aaa import *
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '2'
 from PIL import Image
 import matplotlib.pyplot as plt
 import cv2
@@ -39,14 +38,14 @@ tf.app.flags.DEFINE_integer('eval_steps', 1000, "the step num to eval")
 tf.app.flags.DEFINE_integer('save_steps', 30000, "the steps to save")
 
 tf.app.flags.DEFINE_string('checkpoint_dir', './checkpoint/', 'the checkpoint dir')
-tf.app.flags.DEFINE_string('train_data_dir', './train_tfrecord/', 'the train dataset dir')
-tf.app.flags.DEFINE_string('test_data_dir', './test_tfrecord/', 'the test dataset dir')
+tf.app.flags.DEFINE_string('train_data_dir', './train_tfrecord3755/', 'the train dataset dir')
+tf.app.flags.DEFINE_string('test_data_dir', './test_tfrecord3755/', 'the test dataset dir')
 tf.app.flags.DEFINE_string('log_dir', './log', 'the logging dir')
 
 tf.app.flags.DEFINE_boolean('restore', True, 'whether to restore from checkpoint')
-tf.app.flags.DEFINE_integer('epoch', 50, 'Number of epoches')
+tf.app.flags.DEFINE_integer('epoch', 1, 'Number of epoches')
 tf.app.flags.DEFINE_integer('batch_size', 128, 'Validation batch size')
-tf.app.flags.DEFINE_string('mode', 'train', 'Running mode. One of {"train", "validation"}')
+tf.app.flags.DEFINE_string('mode', 'validation', 'Running mode. One of {"train", "validation"}')
 FLAGS = tf.app.flags.FLAGS
 
 print("-----------------------------main.py start--------------------------")
@@ -162,7 +161,7 @@ def build_graph(num_classes=FLAGS.charset_size, top_k=3, is_training=True):
     loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=net, labels=labels))
     accuracy = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(net, 1), labels), tf.float32))
     global_step = tf.get_variable("step", [], initializer=tf.constant_initializer(0.0), trainable=False)
-    rate = tf.train.exponential_decay(0.01, global_step, decay_steps=1000, decay_rate=0.997, staircase=True)
+    rate = tf.train.exponential_decay(0.001, global_step, decay_steps=8000, decay_rate=0.997, staircase=True)
     train_op = tf.train.AdamOptimizer(learning_rate=rate).minimize(loss, global_step=global_step)
     probabilities = tf.nn.softmax(net)
     tf.summary.scalar('loss', loss)
@@ -186,7 +185,9 @@ def build_graph(num_classes=FLAGS.charset_size, top_k=3, is_training=True):
 
 def train():
     print('Begin training')
-    sess = tf.Session()
+    tf_config = tf.ConfigProto()
+    tf_config.gpu_options.per_process_gpu_memory_fraction = 0.8
+    sess = tf.Session(config=tf_config)
     with sess:
         train_images, train_labels = get_batch2(dirpath=FLAGS.train_data_dir, is_train=True)
         test_images, test_labels = get_batch2(dirpath=FLAGS.test_data_dir, is_train=False)
@@ -264,58 +265,55 @@ def train():
 
 def validation():
     print('validation')
-    test_feeder = DataIterator(data_dir='H:/why_workspace/char_data/test2/')
-    print(test_feeder.size)
-    final_predict_val = []
-    final_predict_index = []
-    groundtruth = []
-
-    with tf.Session() as sess:
-        test_images, test_labels = test_feeder.input_pipeline(batch_size=FLAGS.batch_size, num_epochs=1)
-        graph = build_graph(top_k=3)
+    tf_config = tf.ConfigProto()
+    tf_config.gpu_options.per_process_gpu_memory_fraction = 0.8
+    sess = tf.Session(config=tf_config)
+    with sess:
+        test_images, test_labels = get_batch2(dirpath='H:/why_workspace/char_classify/resnet_practice/test_tfrecord/', is_train=False)
+        graph = build_graph(num_classes=FLAGS.charset_size, top_k=3)
         sess.run(tf.global_variables_initializer())
-        sess.run(tf.local_variables_initializer())  # initialize test_feeder's inside state
+        sess.run(tf.local_variables_initializer())
         coord = tf.train.Coordinator()
-        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
         saver = tf.train.Saver()
-        ckpt = tf.train.latest_checkpoint(FLAGS.checkpoint_dir)
-        if ckpt:
-            saver.restore(sess, ckpt)
-            print("restore from the checkpoint {0}".format(ckpt))
-
+        #test_writer = tf.summary.FileWriter(FLAGS.log_dir + '/val_all')
+        if FLAGS.restore:
+            ckpt = tf.train.latest_checkpoint(FLAGS.checkpoint_dir)
+            if ckpt:
+                saver.restore(sess, ckpt)
+                print("restore from the checkpoint {0}".format(ckpt))
         logger.info(':::Start validation:::')
-        try:
-            i = 0
-            acc_top_1, acc_top_k = 0.0, 0.0
-            while not coord.should_stop():
-                i += 1
-                start_time = time.time()
-                test_images_batch, test_labels_batch = sess.run([test_images, test_labels])
-                feed_dict = {graph['images']: test_images_batch,
-                             graph['labels']: test_labels_batch,
-                             }
-                batch_labels, probs, indices, acc_1, acc_k = sess.run([graph['labels'],
-                                                                       graph['predicted_val_top_k'],
-                                                                       graph['predicted_index_top_k'],
-                                                                       graph['accuracy'],
-                                                                       graph['accuracy_top_k']], feed_dict=feed_dict)
-                final_predict_val += probs.tolist()
-                final_predict_index += indices.tolist()
-                groundtruth += batch_labels.tolist()
-                acc_top_1 += acc_1
-                acc_top_k += acc_k
-                end_time = time.time()
-                logger.info("the batch {0} takes {1} seconds, accuracy = {2}(top_1) {3}(top_k)"
-                            .format(i, end_time - start_time, acc_1, acc_k))
+        while True:
+            try:
+                i = 0
+                acc_top_1, acc_top_k = 0.0, 0.0
+                while not coord.should_stop():
+                    i += 1
+                    #start_time = time.time()
+                    test_images_batch, test_labels_batch = sess.run([test_images, test_labels])
+                    feed_dict = {graph['images']: test_images_batch,
+                                 graph['labels']: test_labels_batch,
+                                 }
+                    acc_1, acc_k, step, test_summary = sess.run([graph['accuracy'],
+                                                                 graph['accuracy_top_k'],
+                                                                 graph['global_step'],
+                                                                 graph['merged_summary_op']], feed_dict=feed_dict)
+                    #test_writer.add_summary(test_summary, step)
+                    acc_top_1 += acc_1
+                    acc_top_k += acc_k
+                    #end_time = time.time()
+                    if(i % 100 == 0):
+                        logger.info("the batch {0} takes x seconds, accuracy = {1}(top_1) {2}(top_k)"
+                                    .format(i, acc_1, acc_k))
+            except tf.errors.OutOfRangeError:
+                logger.info('==================Validation Finished================')
+                #acc_top_1 = acc_top_1 * FLAGS.batch_size / 2200.0
+                #acc_top_k = acc_top_k * FLAGS.batch_size / 2200.0
+                acc_top_1 = acc_top_1 / (i-1)
+                acc_top_k = acc_top_k / (i-1)
+                logger.info('top 1 accuracy {0} top k accuracy {1}'.format(acc_top_1, acc_top_k))
+                print(i)
+                break
 
-        except tf.errors.OutOfRangeError:
-            logger.info('==================Validation Finished================')
-            acc_top_1 = acc_top_1 * FLAGS.batch_size / test_feeder.size
-            acc_top_k = acc_top_k * FLAGS.batch_size / test_feeder.size
-            logger.info('top 1 accuracy {0} top k accuracy {1}'.format(acc_top_1, acc_top_k))
-        finally:
-            coord.request_stop()
-        coord.join(threads)
 
 def inference(image):
     print('inference')
@@ -342,12 +340,7 @@ def main(_):
     if FLAGS.mode == "train":
         train()
     elif FLAGS.mode == "validation":
-        dct = validation()
-        result_file = 'result.dict'
-        logger.info('Write result into {0}'.format(result_file))
-        with open(result_file, 'wb') as f:
-            pickle.dump(dct, f)
-        logger.info('Write file ends')
+        validation()
     elif FLAGS.mode == 'inference':
         image_path = 'H:/why_workspace/char_data/test2/00009/00009_0815.png'
         final_predict_val, final_predict_index = inference(image_path)
